@@ -1,0 +1,227 @@
+#etcd blueprint for hosted clusters
+apiVersion: cr.kanister.io/v1alpha1
+kind: Blueprint
+metadata:
+  name: etcd-blueprint-for-hosted-control-plane
+actions:
+  backup:
+    outputArtifacts:
+      etcdBackup:
+        kopiaSnapshot: "{{ .Phases.uploadSnapshot.Output.kopiaOutput }}"
+    phases:
+    - func: KubeTask
+      name: takeSnapshot
+      args:
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        command:
+          - sh
+          - -o
+          - errexit
+          - -o
+          - pipefail
+          - -c
+          - |
+            etcdns='{{ .Object.metadata.namespace }}-{{ .Object.metadata.name }}'
+            labels='app=etcd'
+            ETCD_POD=$(kubectl get pods -n $etcdns -l $labels -ojsonpath='{.items[0].metadata.name}')
+            #pause reconciliation for the hosted cluster
+            kubectl patch -n {{ .Object.metadata.namespace }} hostedclusters/{{ .Object.metadata.name }} -p '{"spec":{"pausedUntil":"true"}}' --type=merge
+            # exec the snapshot save command
+            kubectl exec -it -n $etcdns $ETCD_POD -c etcd -- sh -c "env ETCDCTL_API=3 /usr/bin/etcdctl --cacert /etc/etcd/tls/etcd-ca/ca.crt --cert /etc/etcd/tls/client/etcd-client.crt --key /etc/etcd/tls/client/etcd-client.key --endpoints=https://localhost:2379 snapshot save /tmp/etcd-backup.db"
+            # this pod name will be used to copy and remove the snapshot
+            kando output etcdPod $ETCD_POD
+            kando output etcdNS $etcdns
+    - func: MultiContainerRun
+      name: uploadSnapshot
+      args:
+        sharedVolumeMedium: Memory
+        initImage: '{{if index .Options "kanisterImage" }} {{- .Options.kanisterImage -}} {{else -}} ghcr.io/kanisterio/kanister-tools:0.114.0 {{- end}}'
+        initCommand: ["bash", "-o", "errexit", "-o", "pipefail", "-c", "mkfifo /tmp/data; chmod 666 /tmp/data"]
+        backgroundImage: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        backgroundCommand:
+          - sh
+          - -o
+          - errexit
+          - -o
+          - pipefail
+          - -c
+          - |
+            kubectl cp -c etcd {{ .Phases.takeSnapshot.Output.etcdNS }}/{{ .Phases.takeSnapshot.Output.etcdPod }}:/tmp/etcd-backup.db /tmp/etcd-backup.db
+            gzip -c /tmp/etcd-backup.db  > /tmp/data
+        outputImage: '{{if index .Options "kanisterImage" }} {{- .Options.kanisterImage -}} {{else -}} ghcr.io/kanisterio/kanister-tools:0.114.0 {{- end}}'
+        outputCommand:
+          - sh
+          - -o
+          - errexit
+          - -o
+          - pipefail
+          - -c
+          - |
+            BACKUP_LOCATION='etcd-backup.db.gz'
+            cat /tmp/data | kando location push --profile '{{ toJson .Profile }}' --path "${BACKUP_LOCATION}" --output-name "kopiaOutput" -
+    - func: KubeTask
+      name: removeSnapshot
+      args:
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        command:
+          - sh
+          - -o
+          - errexit
+          - -o
+          - pipefail
+          - -c
+          - |
+            #unpause reconciliation for the hosted cluster
+            kubectl patch -n {{ .Object.metadata.namespace }} hostedclusters/{{ .Object.metadata.name }} -p '{"spec":{"pausedUntil":"false"}}' --type=merge
+            kubectl exec -it -n {{ .Phases.takeSnapshot.Output.etcdNS }} "{{ .Phases.takeSnapshot.Output.etcdPod }}" -c etcd -- sh -c "rm -rf  /tmp/etcd-backup.db"
+  restore:
+    # This phase is not actualy performing restore of the etcd data store but is used
+    # to copy backup data to one of the leader nodes. It spins a pod on a leader node
+    # having label `etcd-restore`. The pod is used to download the backup file from the
+    # object store and copy it to the /mnt/data location of the PV mapped to PVC `pvc-etcd`.
+    # The PV's mount path is /mnt/data on leader node where the cluster-ocp-restore.sh
+    # script would be executed.
+    inputArtifactNames:
+    - etcdBackup
+    phases:
+    - func: KubeTask
+      name: stopReconciliationandupdatePSS
+      args:
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        command:
+        - bash
+        - -o
+        - errexit
+        - -o
+        - pipefail
+        - -c
+        - |
+          etcdns="{{ .Object.metadata.namespace }}-{{ .Object.metadata.name }}"
+
+          #stop reconciliation for the hosted cluster
+          kubectl patch -n {{ .Object.metadata.namespace }} hostedclusters/{{ .Object.metadata.name }} -p '{"spec":{"pausedUntil":"true"}}' --type=merge
+
+          #unlabel enforce pod security from etcd namespace to allow privileged pods
+          kubectl label ns $etcdns pod-security.kubernetes.io/enforce-
+
+          sleep 15
+
+          #scale down etcd writers
+          kubectl scale deployment -n $etcdns --replicas=0 kube-apiserver openshift-apiserver openshift-oauth-apiserver kubevirt-cloud-controller-manager kube-controller-manager
+
+          #sleep for 30 seconds to allow existing writes to complete
+          sleep 30
+          echo "Scaled down etcd writers and waited for 30 seconds"
+
+          #scale down the etcd pods and delete the pvc's of etcd-1 and etcd-2
+          kubectl scale -n $etcdns statefulset/etcd --replicas=0
+          #sleep for 15 seconds to allow etcd pods to terminate
+          sleep 15
+          echo "Scaled down etcd statefulset and waited for 15 seconds. Deleting the pvc's of etcd-1 and etcd-2 pods now."
+
+          #delete the pvc's of etcd-1 and etcd-2
+
+          kubectl get pvc -n "$etcdns" -l app=etcd -o jsonpath='{.items[*].metadata.name}' \
+          | tr ' ' '\n' \
+          | awk 'NR==2 || NR==3' \
+          | while read pvc; do
+              kubectl delete pvc "$pvc" -n "$etcdns"
+            done
+
+    - func: PrepareData
+      name: copyFromObjectStore
+      args:
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        namespace: '{{ .Object.metadata.namespace }}-{{ .Object.metadata.name }}'
+        volumes:
+          data-etcd-0: "/var/lib"
+        command:
+        - bash
+        - -o
+        - errexit
+        - -o
+        - pipefail
+        - -c
+        - |
+          BACKUP_LOCATION='etcd-backup.db.gz'
+          etcdns="{{ .Object.metadata.namespace }}-{{ .Object.metadata.name }}"
+          kopia_snap='{{ .ArtifactsIn.etcdBackup.KopiaSnapshot }}'
+
+          kando location pull --profile '{{ toJson .Profile }}' --path "${BACKUP_LOCATION}" --kopia-snapshot "${kopia_snap}" - | gzip -d >> /var/lib/restored-etcd-backup.db
+          rm -rf /var/lib/data
+          mkdir -p /var/lib/data
+    - func: PrepareData
+      name: restoreEtcdData
+      args:
+        image: quay.io/coreos/etcd:v3.5.6
+        namespace: '{{ .Object.metadata.namespace }}-{{ .Object.metadata.name }}'
+        volumes:
+          data-etcd-0: "/var/lib"
+        command:
+        - bash
+        - -o
+        - errexit
+        - -o
+        - pipefail
+        - -c
+        - |
+          etcdns="{{ .Object.metadata.namespace }}-{{ .Object.metadata.name }}"
+          etcdctl snapshot restore /var/lib/restored-etcd-backup.db \
+          --data-dir=/var/lib/data --skip-hash-check \
+          --name etcd-0 \
+          --initial-cluster-token=etcd-cluster \
+          --initial-cluster etcd-0=https://etcd-0.etcd-discovery.$etcdns.svc:2380,etcd-1=https://etcd-1.etcd-discovery.$etcdns.svc:2380,etcd-2=https://etcd-2.etcd-discovery.$etcdns.svc:2380 \
+          --initial-advertise-peer-urls https://etcd-0.etcd-discovery.$etcdns.svc:2380
+    - func: KubeTask
+      name: ScaleUpEtcdAndWriters
+      args:
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        command:
+        - bash
+        - -o
+        - errexit
+        - -o
+        - pipefail
+        - -c
+        - |
+          etcdns="{{ .Object.metadata.namespace }}-{{ .Object.metadata.name }}"
+
+          #start reconciliation for the hosted cluster
+          kubectl patch -n {{ .Object.metadata.namespace }} hostedclusters/{{ .Object.metadata.name }} -p '{"spec":{"pausedUntil":"false"}}' --type=merge
+          echo "Checking if etcd and apiservers are up and running"
+          sleep 20
+          kubectl -n $etcdns wait pod -l app=etcd --for=condition=Ready --timeout=120s          
+          echo "ETCD is ready"
+          kubectl -n $etcdns wait --for=condition=available deployment/kube-apiserver --timeout=120s
+          echo "Kube-apiserver is ready"
+          kubectl -n $etcdns wait --for=condition=available deployment/openshift-apiserver --timeout=120s
+          echo "Openshift-apiserver is ready"
+          #Restart the etcd peers 
+          kubectl -n $etcdns delete pod etcd-1 etcd-2
+          #Checking if etcd members are up and running"
+          kubectl -n $etcdns wait pod -l app=etcd --for=condition=Ready --timeout=120s
+          echo "ETCD pods are ready"
+          #manually restart the hosted cluster to ensure all components pick up the restored data
+          kubectl annotate hostedcluster -n {{ .Object.metadata.namespace }} {{ .Object.metadata.name }} hypershift.openshift.io/restart-date=$(date --iso-8601=seconds) --overwrite
+          sleep 30
+          echo "The etcd restore process is complete. Please verify the cluster state."
+  delete:
+    inputArtifactNames:
+    - etcdBackup
+    phases:
+    - func: KubeTask
+      name: deleteFromObjectStore
+      args:
+        namespace: "{{ .Namespace.Name }}"
+        image: '{{if index .Options "kanisterImage" }} {{- .Options.kanisterImage -}} {{else -}} ghcr.io/kanisterio/kanister-tools:0.114.0 {{- end}}'
+        command:
+        - bash
+        - -o
+        - errexit
+        - -o
+        - pipefail
+        - -c
+        - |
+           backup_file_path='etcd-backup.db.gz'
+           kopia_snap='{{ .ArtifactsIn.etcdBackup.KopiaSnapshot }}'
+           kando location delete --profile '{{ toJson .Profile }}' --path "${backup_file_path}" --kopia-snapshot "${kopia_snap}"
