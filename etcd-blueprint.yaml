@@ -75,12 +75,6 @@ actions:
             kubectl patch -n {{ .Object.metadata.namespace }} hostedclusters/{{ .Object.metadata.name }} -p '{"spec":{"pausedUntil":"false"}}' --type=merge
             kubectl exec -it -n {{ .Phases.takeSnapshot.Output.etcdNS }} "{{ .Phases.takeSnapshot.Output.etcdPod }}" -c etcd -- sh -c "rm -rf  /tmp/etcd-backup.db"
   restore:
-    # This phase is not actualy performing restore of the etcd data store but is used
-    # to copy backup data to one of the leader nodes. It spins a pod on a leader node
-    # having label `etcd-restore`. The pod is used to download the backup file from the
-    # object store and copy it to the /mnt/data location of the PV mapped to PVC `pvc-etcd`.
-    # The PV's mount path is /mnt/data on leader node where the cluster-ocp-restore.sh
-    # script would be executed.
     inputArtifactNames:
     - etcdBackup
     phases:
