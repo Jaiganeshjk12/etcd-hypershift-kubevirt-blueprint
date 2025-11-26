@@ -12,10 +12,14 @@ All the steps in this document has to be done from the management cluster where 
 This blueprint has backup, restore and delete action to manage the backup, restore and retire steps in Kasten respectively. 
 
 ## Backup
+
+### Deploy the blueprint in Kasten namespace
+
 Create the blueprint from this repository in your cluster. 
 ```bash
 kubectl create -f https://raw.githubusercontent.com/Jaiganeshjk12/etcd-hypershift-kubevirt-blueprint/refs/heads/main/etcd-blueprint.yaml -n kasten-io
 ```
+### Annotate the hostedcluster resource or create a blueprintbinding
 
 Once the Blueprint is created, annotate the hostedcluster resource in the default clusters namespace(this can change depending on the ACM setup)
 ```bash
@@ -40,7 +44,7 @@ spec:
         - name: ""
           resource: hostedclusters
 ```
-
+### Create a policy in Kasten
 Once the hostedcluster resource is annotated or blueprintbinding resource is created, Use Kasten to create policy for the hostedcluster namespace and setup location profile for Kanister action within the policy. 
 No need to use filters for resources because we might also need some encryption keys that are used for the hypershift cluster etcd. 
 
@@ -48,3 +52,7 @@ No need to use filters for resources because we might also need some encryption 
 This blueprint expects the hostedcluster to be already present before the restore is started. During the disaster, recreate the hostedcluster and then run the restore from Kasten so that Kasten can be restored.
 You can use restore from Kasten UI (https://docs.kasten.io/latest/usage/restore#restoring-existing-applications) and filter out the resources that needs to be restored. Make sure to select the hostedcluster which is the subject of this blueprint. 
 Once the restore completes, Please validate the cluster API and resources within the hypershift hosted cluster by connecting to that cluster. 
+
+## Limitations
+- This blueprint assumes that the hostedcluster is already running before the restore starts.
+- Restore works on the hostedcluster with the same name. 
