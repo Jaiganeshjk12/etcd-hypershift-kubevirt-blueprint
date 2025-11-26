@@ -1,7 +1,10 @@
 # etcd-hypershift-kubevirt-blueprint
 This is a Kanister blueprint to backup and restore etcd database for OCP clusters that runs inside another openshift cluster with hypershift and KubeVirt provider. 
 
-Hypershift clusters with Kubevirt basically runs the controlplane components in its own namespace within the management cluster. KubeVirt VMs are bootstrapped as worker nodes. 
+This follows the backup and restore procedure for hosted controlplanes documented [here](https://docs.redhat.com/en/documentation/openshift_container_platform/4.13/html/hosted_control_planes/hcp-backup-restore-dr)
+
+Hypershift clusters with Kubevirt basically runs the controlplane components in its own namespace within a management cluster. KubeVirt VMs are bootstrapped as worker nodes (https://hypershift.pages.dev/how-to/kubevirt/create-kubevirt-cluster/).
+
 In such clusters, etcd is not accessible within the cluster to access and take snapshot of it. 
 
 All the steps in this document has to be done from the management cluster where the hypershift clusters are hosted(where the controlplane components are run). 
