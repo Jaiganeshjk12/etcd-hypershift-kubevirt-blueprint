@@ -8,11 +8,29 @@ actions:
     outputArtifacts:
       etcdBackup:
         kopiaSnapshot: "{{ .Phases.uploadSnapshot.Output.kopiaOutput }}"
+    deferPhase:
+      func: KubeTask  
+      name: unPauseHostedClusterReconciliation    
+      args:
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
+        namespace: '{{ .Object.metadata.namespace }}'        
+        command:
+          - bash
+          - -o
+          - errexit
+          - -o
+          - pipefail
+          - -x
+          - -c
+          - |
+            echo "Running Defer Phase - Unpausing hosted cluster reconciliation"
+            #unpause reconciliation for the hosted cluster
+            kubectl patch -n {{ .Object.metadata.namespace }} hostedclusters/{{ .Object.metadata.name }} -p '{"spec":{"pausedUntil":"false"}}' --type=merge
     phases:
     - func: KubeTask
       name: takeSnapshot
       args:
-        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
         command:
           - sh
           - -o
@@ -35,9 +53,9 @@ actions:
       name: uploadSnapshot
       args:
         sharedVolumeMedium: Memory
-        initImage: '{{if index .Options "kanisterImage" }} {{- .Options.kanisterImage -}} {{else -}} ghcr.io/kanisterio/kanister-tools:0.114.0 {{- end}}'
+        initImage: '{{if index .Options "kanisterImage" }} {{- .Options.kanisterImage -}} {{else -}} ghcr.io/kanisterio/kanister-tools:0.116.0 {{- end}}'
         initCommand: ["bash", "-o", "errexit", "-o", "pipefail", "-c", "mkfifo /tmp/data; chmod 666 /tmp/data"]
-        backgroundImage: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        backgroundImage: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
         backgroundCommand:
           - sh
           - -o
@@ -48,7 +66,7 @@ actions:
           - |
             kubectl cp -c etcd {{ .Phases.takeSnapshot.Output.etcdNS }}/{{ .Phases.takeSnapshot.Output.etcdPod }}:/tmp/etcd-backup.db /tmp/etcd-backup.db
             gzip -c /tmp/etcd-backup.db  > /tmp/data
-        outputImage: '{{if index .Options "kanisterImage" }} {{- .Options.kanisterImage -}} {{else -}} ghcr.io/kanisterio/kanister-tools:0.114.0 {{- end}}'
+        outputImage: '{{if index .Options "kanisterImage" }} {{- .Options.kanisterImage -}} {{else -}} ghcr.io/kanisterio/kanister-tools:0.116.0 {{- end}}'
         outputCommand:
           - sh
           - -o
@@ -62,7 +80,7 @@ actions:
     - func: KubeTask
       name: removeSnapshot
       args:
-        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
         command:
           - sh
           - -o
@@ -71,8 +89,6 @@ actions:
           - pipefail
           - -c
           - |
-            #unpause reconciliation for the hosted cluster
-            kubectl patch -n {{ .Object.metadata.namespace }} hostedclusters/{{ .Object.metadata.name }} -p '{"spec":{"pausedUntil":"false"}}' --type=merge
             kubectl exec -it -n {{ .Phases.takeSnapshot.Output.etcdNS }} "{{ .Phases.takeSnapshot.Output.etcdPod }}" -c etcd -- sh -c "rm -rf  /tmp/etcd-backup.db"
   restore:
     inputArtifactNames:
@@ -81,7 +97,7 @@ actions:
     - func: KubeTask
       name: stopReconciliationandupdatePSS
       args:
-        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
         command:
         - bash
         - -o
@@ -125,7 +141,7 @@ actions:
     - func: PrepareData
       name: copyFromObjectStore
       args:
-        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
         namespace: '{{ .Object.metadata.namespace }}-{{ .Object.metadata.name }}'
         volumes:
           data-etcd-0: "/var/lib"
@@ -169,7 +185,7 @@ actions:
     - func: KubeTask
       name: ScaleUpEtcdAndWriters
       args:
-        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.114.0
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
         command:
         - bash
         - -o
@@ -207,7 +223,7 @@ actions:
       name: deleteFromObjectStore
       args:
         namespace: "{{ .Namespace.Name }}"
-        image: '{{if index .Options "kanisterImage" }} {{- .Options.kanisterImage -}} {{else -}} ghcr.io/kanisterio/kanister-tools:0.114.0 {{- end}}'
+        image: '{{if index .Options "kanisterImage" }} {{- .Options.kanisterImage -}} {{else -}} ghcr.io/kanisterio/kanister-tools:0.116.0 {{- end}}'
         command:
         - bash
         - -o
