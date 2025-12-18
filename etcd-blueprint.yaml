@@ -19,7 +19,6 @@ actions:
           - errexit
           - -o
           - pipefail
-          - -x
           - -c
           - |
             echo "Running Defer Phase - Unpausing hosted cluster reconciliation"
