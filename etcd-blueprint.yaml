@@ -13,7 +13,6 @@ actions:
       name: unPauseHostedClusterReconciliation    
       args:
         image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
-        namespace: '{{ .Object.metadata.namespace }}'        
         command:
           - bash
           - -o
