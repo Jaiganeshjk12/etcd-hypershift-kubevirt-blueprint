@@ -91,6 +91,24 @@ actions:
   restore:
     inputArtifactNames:
     - etcdBackup
+    deferPhase:
+      func: KubeTask  
+      name: removeTempCM    
+      args:
+        image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
+        command:
+          - bash
+          - -o
+          - errexit
+          - -o
+          - pipefail
+          - -c
+          - |
+            etcdns="{{ .Object.metadata.namespace }}-{{ .Object.metadata.name }}"
+
+            echo "Running Defer Phase - Removing the temp configmap created for certs"
+            CUSTOM_CA_CONFIGMAP_NAME=$(kubectl get cm -n $etcdns -o name |grep temp-k10-cm-custom-ca-bundle-store)
+            kubectl -n $etcdns delete $CUSTOM_CA_CONFIGMAP_NAME --ignore-not-found
     phases:
     - func: KubeTask
       name: stopReconciliationandupdatePSS
@@ -128,7 +146,7 @@ actions:
           echo "Scaled down etcd statefulset and waited for 15 seconds. Deleting the pvc's of etcd-1 and etcd-2 pods now."
 
           #wait for the etcd pods to be deleted before deleting the pvc's.If the pods are not deleted within the timeout, force delete the pods.
-          kubectl wait -n "$etcdns" --for=delete pod -l app=etcd --timeout=60s || kubectl delete pod -n "$etcdns" -l app=etcd --grace-period=0 --force
+          kubectl wait -n "$etcdns" --for=delete pod -l app=etcd --timeout=60s || kubectl delete pod -n "$etcdns" -l app=etcd --grace-period=0 --force --ignore-not-found
 
           #delete the pvc's of etcd-1 and etcd-2
 
@@ -220,10 +238,6 @@ actions:
           kubectl annotate hostedcluster -n {{ .Object.metadata.namespace }} {{ .Object.metadata.name }} hypershift.openshift.io/restart-date=$(date --iso-8601=seconds) --overwrite
           sleep 30
           echo "The etcd restore process is complete. Please verify the cluster state."
-
-          #Deleting the temp configmap created for certs
-          CUSTOM_CA_CONFIGMAP_NAME=$(kubectl get cm -n $etcdns -o name |grep temp-k10-cm-custom-ca-bundle-store)
-          kubectl -n $etcdns delete $CUSTOM_CA_CONFIGMAP_NAME
   delete:
     inputArtifactNames:
     - etcdBackup
