@@ -92,8 +92,8 @@ actions:
     inputArtifactNames:
     - etcdBackup
     deferPhase:
-      func: KubeTask  
-      name: removeTempCM    
+      func: KubeTask
+      name: removeTempCM
       args:
         image: ghcr.io/kanisterio/kanister-kubectl-1.18:0.116.0
         command:
